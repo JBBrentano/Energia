@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Medidor Bidirecional · Balanço Líquido</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>tailwind.config={darkMode:'class'}</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;800&display=swap" rel="stylesheet">
+<style>body{font-family:'Manrope',system-ui,sans-serif}.num{font-variant-numeric:tabular-nums}</style>
+</head>
+<body class="bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-100 min-h-screen">
+<div class="max-w-7xl mx-auto p-4 md:p-6 space-y-6">
+
+<header class="flex flex-wrap items-center justify-between gap-3">
+  <div>
+    <h1 class="text-2xl md:text-3xl font-extrabold">Balanço de Energia Fotovoltaica</h1>
+    <p class="text-sm text-slate-500 dark:text-slate-400">Medidor bidirecional · códigos 03 e 103</p>
+    <p id="status" class="text-xs mt-1 font-semibold"></p>
+  </div>
+  <div class="flex flex-wrap gap-2">
+    <button id="btnCloseTop" class="btn !border-sky-500 !text-sky-600 dark:!text-sky-400">🔒 Finalizar leitura mensal</button>
+    <button id="btnExport" class="btn">Exportar backup JSON</button>
+    <button id="btnImport" class="btn">Importar backup</button>
+    <button id="btnClear" class="btn text-red-600">Limpar histórico</button>
+    <button id="btnTheme" class="btn" aria-label="Alternar tema">Tema</button>
+    <input type="file" id="fileImport" accept=".json" class="hidden">
+  </div>
+</header>
+
+<section class="card">
+  <h2 id="formTitle" class="font-bold mb-3">Nova leitura</h2>
+  <form id="form" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 items-end">
+    <label class="lbl">Data e hora<input type="datetime-local" id="dt" required class="inp"></label>
+    <label class="lbl">Consumo importado · 03 (kWh)<input type="number" step="any" min="0" id="r03" required class="inp"></label>
+    <label class="lbl">Energia injetada · 103 (kWh)<input type="number" step="any" min="0" id="r103" required class="inp"></label>
+    <div class="flex flex-wrap gap-2">
+      <button type="submit" id="btnSave" class="flex-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-4 py-2">Salvar leitura</button>
+      <button type="button" id="btnClose" class="btn !border-sky-500 !text-sky-600 dark:!text-sky-400" title="Use quando a concessionária acabou de fazer a leitura mensal">🔒 Salvar e fechar ciclo</button>
+      <button type="button" id="btnCancel" class="btn hidden">Cancelar</button>
+    </div>
+  </form>
+  <p id="msg" class="text-sm text-red-500 mt-2 h-4"></p>
+</section>
+
+<section class="flex flex-wrap items-center gap-3">
+  <label class="text-sm font-semibold">Período dos indicadores</label>
+  <select id="period" class="inp !w-auto"></select>
+  <span id="cycleInfo" class="text-xs text-slate-500 dark:text-slate-400"></span>
+</section>
+
+<section class="grid gap-4 sm:grid-cols-3">
+  <div class="card"><p class="kpi-l">Total consumido da rede (Σ Δ03)</p><p id="k03" class="kpi-v num">–</p></div>
+  <div class="card"><p class="kpi-l">Total injetado na rede (Σ Δ103)</p><p id="k103" class="kpi-v num text-emerald-600 dark:text-emerald-400">–</p></div>
+  <div id="kSaldoCard" class="card"><p class="kpi-l">Saldo líquido (injeção − consumo)</p><p id="kSaldo" class="kpi-v num">–</p><p id="kSaldoTxt" class="text-xs mt-1"></p></div>
+</section>
+
+<section class="grid gap-4 lg:grid-cols-2">
+  <div class="card"><h3 class="font-bold mb-2 text-sm">ΔConsumo vs ΔInjeção por intervalo (kWh)</h3><div class="h-72"><canvas id="c1"></canvas></div></div>
+  <div class="card"><h3 class="font-bold mb-2 text-sm">Saldo líquido acumulado (kWh)</h3><div class="h-72"><canvas id="c2"></canvas></div></div>
+</section>
+
+<section class="card">
+  <div class="flex flex-wrap items-end justify-between gap-3 mb-3">
+    <div>
+      <h3 class="font-bold">Acumulado em um período escolhido (kWh)</h3>
+      <p class="text-xs text-slate-500 dark:text-slate-400">Consumo e injeção somados desde o início do período até cada leitura.</p>
+    </div>
+    <div class="flex flex-wrap items-end gap-2">
+      <label class="lbl">De<input type="date" id="from" class="inp"></label>
+      <label class="lbl">Até<input type="date" id="to" class="inp"></label>
+      <button type="button" class="btn" data-q="7">7 dias</button>
+      <button type="button" class="btn" data-q="30">30 dias</button>
+      <button type="button" class="btn" data-q="c">Ciclo atual</button>
+      <button type="button" class="btn" data-q="m">Mês</button>
+      <button type="button" class="btn" data-q="all">Tudo</button>
+    </div>
+  </div>
+  <p id="rangeNote" class="text-sm mb-2"></p>
+  <div class="h-80"><canvas id="c3"></canvas></div>
+  <p id="rangeInterp" class="text-xs text-slate-500 dark:text-slate-400 mt-2"></p>
+</section>
+
+<section class="card overflow-hidden">
+  <h2 class="font-bold mb-3">Histórico de leituras</h2>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm num">
+      <thead class="text-left text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800">
+        <tr>
+          <th class="p-2">Data/hora</th><th class="p-2 text-right">Leit. 03</th><th class="p-2 text-right">Leit. 103</th>
+          <th class="p-2 text-right">Δt</th><th class="p-2 text-right">Δ Consumo</th><th class="p-2 text-right">Δ Injeção</th>
+          <th class="p-2 text-right">Ritmo kWh/dia (cons. / inj.)</th><th class="p-2">Saldo líquido</th><th class="p-2">Ações</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+  <p id="empty" class="text-center text-slate-500 py-8 hidden">Nenhuma leitura ainda. A primeira leitura vira o ponto de partida; registre a próxima para ver os cálculos.</p>
+</section>
+</div>
+
+<div id="modal" class="hidden fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+  <div class="card w-full max-w-md space-y-3">
+    <h2 class="font-bold">🔒 Finalizar leitura mensal</h2>
+    <p class="text-sm text-slate-500 dark:text-slate-400">Informe a leitura que a concessionária acabou de fazer. Ela encerra o ciclo atual e inicia um novo a partir dela.</p>
+    <label class="lbl block">Data e hora da leitura<input type="datetime-local" id="mdt" class="inp"></label>
+    <label class="lbl block">Consumo importado · 03 (kWh)<input type="number" step="any" min="0" id="m03" class="inp"></label>
+    <label class="lbl block">Energia injetada · 103 (kWh)<input type="number" step="any" min="0" id="m103" class="inp"></label>
+    <p id="mmsg" class="text-sm text-red-500 h-4"></p>
+    <div class="flex gap-2 justify-end">
+      <button type="button" id="mCancel" class="btn">Cancelar</button>
+      <button type="button" id="mOk" class="rounded-lg bg-sky-600 hover:bg-sky-700 text-white font-semibold px-4 py-2">Finalizar ciclo</button>
+    </div>
+  </div>
+</div>
+<div id="toast" class="hidden fixed bottom-4 left-1/2 -translate-x-1/2 z-50 max-w-[90vw] rounded-lg px-4 py-3 text-sm font-semibold text-white shadow-lg"></div>
+
+<style>
+.btn{border:1px solid #cbd5e1;border-radius:.5rem;padding:.4rem .8rem;font-size:.85rem;font-weight:600;background:#fff}
+.dark .btn{background:#0f172a;border-color:#334155}
+.btn:hover{background:#f1f5f9}.dark .btn:hover{background:#1e293b}
+.card{background:#fff;border:1px solid #e2e8f0;border-radius:.75rem;padding:1rem}
+.dark .card{background:#0f172a;border-color:#1e293b}
+.inp{width:100%;margin-top:.25rem;border:1px solid #cbd5e1;border-radius:.5rem;padding:.45rem .6rem;background:transparent;font-size:.9rem}
+.dark .inp{border-color:#334155;color-scheme:dark}.dark select.inp option{background:#0f172a}
+.inp::placeholder{color:#94a3b8;opacity:.85}
+.lbl{font-size:.75rem;font-weight:600;color:#64748b}
+.kpi-l{font-size:.75rem;color:#64748b}.kpi-v{font-size:1.9rem;font-weight:800;margin-top:.25rem}
+.badge{display:inline-block;border-radius:9999px;padding:.15rem .6rem;font-weight:700;font-size:.75rem}
+.b-red{background:#fee2e2;color:#b91c1c}.b-green{background:#d1fae5;color:#047857}.b-gray{background:#e2e8f0;color:#475569}
+.dark .b-red{background:#7f1d1d;color:#fecaca}.dark .b-green{background:#064e3b;color:#a7f3d0}.dark .b-gray{background:#334155;color:#cbd5e1}
+.b-blue{background:#e0f2fe;color:#0369a1}.dark .b-blue{background:#0c4a6e;color:#bae6fd}
+tr.fech{background:#f0f9ff;border-bottom:2px solid #38bdf8!important}.dark tr.fech{background:#0c2a40}
+tbody tr{border-bottom:1px solid #e2e8f0}.dark tbody tr{border-color:#1e293b}
+</style>
+
+<script type="module">
+import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {getFirestore,initializeFirestore,persistentLocalCache,collection,doc,setDoc,deleteDoc,onSnapshot,writeBatch} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+// ===== COLE AQUI o firebaseConfig do seu projeto (Console Firebase > Configurações do projeto > Seus apps) =====
+const firebaseConfig={
+  apiKey:"AIzaSyDSrHiw3_U0tlfBJn44ifqMjXO3n6-XZgQ",
+  authDomain:"teste1233-f374a.firebaseapp.com",
+  projectId:"teste1233-f374a",
+  storageBucket:"teste1233-f374a.firebasestorage.app",
+  messagingSenderId:"898972266968",
+  appId:"1:898972266968:web:ba0de03bbd4d58d93082ad"
+};
+// Coleção exclusiva deste painel (não mexe nas coleções do seu outro projeto)
+const COLECAO='fv_medidor_leituras';
+// ==========================================================================================================
+const useFb=!/^COLE/.test(firebaseConfig.apiKey);
+let db=null;
+if(useFb){
+  const app=initializeApp(firebaseConfig);
+  try{db=initializeFirestore(app,{localCache:persistentLocalCache(),experimentalAutoDetectLongPolling:true})}catch(e){console.warn(e);db=getFirestore(app)}
+}
+const KEY='fv_leituras_v1';
+const $=id=>document.getElementById(id);
+let data=useFb?[]:load(), editId=null, charts={};
+
+function load(){try{return JSON.parse(localStorage.getItem(KEY))||[]}catch{return[]}}
+function save(){localStorage.setItem(KEY,JSON.stringify(data))}
+const pad=n=>String(n).padStart(2,'0');
+function nowLocal(){const d=new Date();return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`}
+const fmt=(n,d=2)=>n.toLocaleString('pt-BR',{minimumFractionDigits:d,maximumFractionDigits:d});
+const fdt=s=>new Date(s).toLocaleString('pt-BR',{dateStyle:'short',timeStyle:'short'});
+function fdur(h){return h<48?fmt(h,1)+' h':fmt(h/24,1)+' d'}
+const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+
+// Cálculos: ordena e compara com o registro anterior
+function compute(){
+  const s=[...data].sort((a,b)=>new Date(a.dt)-new Date(b.dt));
+  return s.map((r,i)=>{
+    if(!i)return{...r,base:true};
+    const p=s[i-1],h=(new Date(r.dt)-new Date(p.dt))/36e5,dias=h/24;
+    const d03=r.r03-p.r03,d103=r.r103-p.r103;
+    return{...r,h,d03,d103,liq:d103-d03,m03:dias>0?d03/dias:0,m103:dias>0?d103/dias:0,neg:d03<0||d103<0};
+  });
+}
+const monthKey=s=>s.slice(0,7);
+let userPick=false; // false = seleciona automaticamente o ciclo atual quando houver fechamento
+const closings=rows=>rows.filter(r=>r.fechamento);
+// Cada ciclo fechado = leituras posteriores ao fechamento anterior, até o fechamento (inclusive)
+function cycles(rows){
+  const cl=closings(rows);
+  return cl.map((c,i)=>{
+    const p=cl[i-1];
+    const rs=rows.filter(r=>!r.base&&TT(r)<=TT(c)&&(!p||TT(r)>TT(p)));
+    return{id:c.id,start:(p||rows[0]).dt,end:c.dt,rows:rs};
+  }).filter(c=>c.rows.length);
+}
+
+function populatePeriods(rows){
+  const cl=closings(rows),cyc=cycles(rows).reverse();
+  const cur=userPick?$('period').value:'cur';
+  const ms=[...new Set(rows.map(r=>monthKey(r.dt)))].sort().reverse();
+  const lbl=c=>{const [y,m]=c.end.slice(0,7).split('-');return `Ciclo ${m}/${y} · ${fd(c.start)} a ${fd(c.end)}`};
+  $('period').innerHTML=`<option value="cur">Ciclo atual (${cl.length?'desde '+fd(cl[cl.length-1].dt):'desde o início'})</option><option value="all">Período total</option>`
+    +(cyc.length?'<optgroup label="Ciclos da concessionária">'+cyc.map(c=>`<option value="c:${c.id}">${lbl(c)}</option>`).join('')+'</optgroup>':'')
+    +(ms.length?'<optgroup label="Meses do calendário">'+ms.map(m=>{const [y,mo]=m.split('-');return `<option value="${m}">Mês ${mo}/${y}</option>`}).join('')+'</optgroup>':'');
+  $('period').value=[...$('period').options].some(o=>o.value===cur)?cur:'all';
+}
+
+function render(){
+  const rows=compute();
+  const ult=rows[rows.length-1],nf=n=>n.toLocaleString('pt-BR',{maximumFractionDigits:3});
+  $('r03').placeholder=ult?'Última: '+nf(ult.r03):'kWh';
+  $('r103').placeholder=ult?'Última: '+nf(ult.r103):'kWh';
+  populatePeriods(rows);
+  const sel=$('period').value;
+  const calc=rows.filter(r=>!r.base);
+  const cl=closings(rows),lastCl=cl[cl.length-1];
+  let f;
+  if(sel==='all')f=calc;
+  else if(sel==='cur')f=lastCl?calc.filter(r=>TT(r)>TT(lastCl)):calc;
+  else if(sel.startsWith('c:')){const c=cycles(rows).find(x=>'c:'+x.id===sel);f=c?c.rows:[]}
+  else f=calc.filter(r=>monthKey(r.dt)===sel);
+  const cyc1=sel.startsWith('c:')?cycles(rows).find(x=>'c:'+x.id===sel):null;
+  $('cycleInfo').textContent=sel==='cur'
+      ?(lastCl&&!f.length?`Novo ciclo iniciado em ${fdt(lastCl.dt)}. Os indicadores começam a somar a partir da próxima leitura.`
+      :lastCl?`Ciclo aberto desde ${fdt(lastCl.dt)} · ${Math.floor((Date.now()-TT(lastCl))/864e5)} dias · ${f.length} leitura(s)`
+              :'Nenhum ciclo fechado ainda: mostrando tudo desde a primeira leitura. Marque a leitura da concessionária com “Fechar ciclo”.')
+    :cyc1?`Ciclo fechado de ${fd(cyc1.start)} a ${fd(cyc1.end)} · ${f.length} leitura(s)`
+    :sel==='all'?'':'Atenção: um mês do calendário pode pegar só parte de um ciclo.';
+  const s03=f.reduce((a,r)=>a+r.d03,0),s103=f.reduce((a,r)=>a+r.d103,0),liq=s103-s03;
+  $('k03').textContent=fmt(s03)+' kWh';
+  $('k103').textContent=fmt(s103)+' kWh';
+  const debt=liq<0,zero=liq===0;
+  $('kSaldo').textContent=(liq>0?'+':'')+fmt(liq)+' kWh';
+  $('kSaldo').className='kpi-v num '+(zero?'':debt?'text-red-600 dark:text-red-400':'text-emerald-600 dark:text-emerald-400');
+  $('kSaldoTxt').textContent=zero?'Sem saldo no período':debt?'Consumo líquido a faturar':'Crédito acumulado com a concessionária';
+  $('kSaldoTxt').className='text-xs mt-1 '+(debt?'text-red-600 dark:text-red-400':'text-emerald-600 dark:text-emerald-400');
+
+  // tabela
+  $('empty').classList.toggle('hidden',rows.length>0);
+  $('tbody').innerHTML=[...rows].reverse().map(r=>{
+    const tag=r.fechamento?' <span class="badge b-blue">🔒 Leitura da concessionária</span>':'';
+    const trc=r.fechamento?' class="fech"':'';
+    const act=`<button class="text-slate-600 dark:text-slate-300 font-semibold mr-2" onclick="toggleClose('${r.id}')">${r.fechamento?'Reabrir':'Fechar ciclo'}</button><button class="text-sky-600 font-semibold mr-2" onclick="edit('${r.id}')">Editar</button><button class="text-red-600 font-semibold" onclick="del('${r.id}')">Excluir</button>`;
+    const c=`<td class="p-2 text-right">${fmt(r.r03)}</td><td class="p-2 text-right">${fmt(r.r103)}</td>`;
+    if(r.base)return `<tr${trc}><td class="p-2">${fdt(r.dt)}${tag}</td>${c}<td class="p-2 text-right" colspan="4"><span class="text-slate-500">Ponto de partida</span></td><td class="p-2"><span class="badge b-gray">Baseline</span></td><td class="p-2 whitespace-nowrap">${act}</td></tr>`;
+    const cls=r.liq<0?'b-red':r.liq>0?'b-green':'b-gray';
+    const txt=r.liq<0?`Faturar ${fmt(r.liq)}`:r.liq>0?`Crédito +${fmt(r.liq)}`:'Neutro';
+    return `<tr${trc}><td class="p-2">${fdt(r.dt)}${tag}${r.neg?' <span title="Leitura menor que a anterior: verifique digitação ou virada de mostrador" class="text-amber-500">⚠</span>':''}</td>${c}
+      <td class="p-2 text-right">${fdur(r.h)}</td><td class="p-2 text-right">${fmt(r.d03)}</td><td class="p-2 text-right">${fmt(r.d103)}</td>
+      <td class="p-2 text-right">${fmt(r.m03)} / ${fmt(r.m103)}</td><td class="p-2"><span class="badge ${cls}">${txt}</span></td><td class="p-2 whitespace-nowrap">${act}</td></tr>`;
+  }).join('');
+
+  drawCharts(f);
+  drawRange(rows);
+}
+
+function drawCharts(f){
+  const dark=document.documentElement.classList.contains('dark');
+  const tick=dark?'#94a3b8':'#64748b',grid=dark?'#1e293b':'#e2e8f0';
+  const labels=f.map(r=>fdt(r.dt));
+  let acc=0;const cum=f.map(r=>(acc+=r.liq));
+  const opt={responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+    plugins:{legend:{labels:{color:tick}}},scales:{x:{ticks:{color:tick,maxRotation:45},grid:{color:grid}},y:{ticks:{color:tick},grid:{color:grid}}}};
+  Object.values(charts).forEach(c=>c.destroy());
+  charts.a=new Chart($('c1'),{type:'bar',data:{labels,datasets:[
+    {label:'Δ Consumo',data:f.map(r=>r.d03),backgroundColor:'#ef4444'},
+    {label:'Δ Injeção',data:f.map(r=>r.d103),backgroundColor:'#10b981'}]},options:opt});
+  charts.b=new Chart($('c2'),{type:'line',data:{labels,datasets:[
+    {label:'Saldo acumulado',data:cum,borderColor:'#0ea5e9',backgroundColor:'rgba(14,165,233,.15)',fill:true,tension:.25,
+     segment:{borderColor:c=>c.p1.parsed.y<0?'#ef4444':'#10b981'}}]},options:opt});
+}
+
+// Gráfico acumulado por período escolhido
+let rangeChart=null;
+const TT=r=>new Date(r.dt).getTime();
+const dstr=t=>{const d=new Date(t);return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`};
+const fd=t=>new Date(t).toLocaleDateString('pt-BR');
+const fd2=t=>{const d=new Date(t);return d.getFullYear()+'/'+(d.getMonth()+1)+'/'+d.getDate()};
+function interp(rows,t,key){
+  if(t<=TT(rows[0]))return rows[0][key];
+  for(let i=1;i<rows.length;i++){
+    if(t<=TT(rows[i])){const a=rows[i-1],b=rows[i];return Math.round(a[key]+(b[key]-a[key])*(t-TT(a))/(TT(b)-TT(a)))}
+  }
+  return rows[rows.length-1][key];
+}
+function drawRange(rows){
+  const note=$('rangeNote'),ni=$('rangeInterp');
+  if(rangeChart){rangeChart.destroy();rangeChart=null}
+  ni.textContent='';
+  if(rows.length<2){note.textContent='Registre ao menos duas leituras para ver o acumulado.';note.className='text-sm mb-2 text-slate-500';return}
+  const t0=TT(rows[0]),t1=TT(rows[rows.length-1]);
+  if(!$('from').value)$('from').value=dstr(t0);
+  if(!$('to').value)$('to').value=dstr(t1);
+  const a=new Date($('from').value+'T00:00:00').getTime(),b=new Date($('to').value+'T23:59:59').getTime();
+  const ca=Math.max(a,t0),cb=Math.min(b,t1);
+  if(a>b||ca>=cb){note.textContent=a>b?'A data inicial precisa ser anterior à final.':'Não há leituras suficientes dentro desse período.';note.className='text-sm mb-2 text-red-500';return}
+  const ts=[ca,...rows.filter(r=>TT(r)>ca&&TT(r)<cb).map(TT),cb];
+  const b03=interp(rows,ca,'r03'),b103=interp(rows,ca,'r103');
+  const P=ts.map(t=>({t,c:interp(rows,t,'r03')-b03,i:interp(rows,t,'r103')-b103}));
+  const last=P[P.length-1],liq=last.i-last.c,dias=Math.max(1,Math.round((new Date(fd2(cb)).getTime()-new Date(fd2(ca)).getTime())/864e5));
+  note.className='text-sm mb-2';
+  note.innerHTML=`<b>${fd(ca)} a ${fd(cb)}</b> (${dias} ${dias===1?'dia':'dias'}): consumo <b class="text-red-600 dark:text-red-400">${fmt(last.c,0)}</b> · injeção <b class="text-emerald-600 dark:text-emerald-400">${fmt(last.i,0)}</b> · saldo <b class="${liq<0?'text-red-600 dark:text-red-400':'text-emerald-600 dark:text-emerald-400'}">${liq>0?'+':''}${fmt(liq,0)} kWh</b> · média ${fmt(last.c/dias,0)} consumidos e ${fmt(last.i/dias,0)} injetados por dia`;
+  const edge=[ca,cb].some(t=>!rows.some(r=>TT(r)===t));
+  const msgs=[];
+  if(edge)msgs.push('Nas bordas do período, os valores são estimados por interpolação linear entre as leituras vizinhas.');
+  if(ca>a||cb<b)msgs.push('O período foi ajustado ao intervalo que tem leituras.');
+  ni.textContent=msgs.join(' ');
+  const dark=document.documentElement.classList.contains('dark');
+  const tick=dark?'#94a3b8':'#64748b',grid=dark?'#1e293b':'#e2e8f0';
+  const ds=(label,k,color,extra={})=>({label,data:P.map(p=>({x:p.t,y:k(p)})),borderColor:color,backgroundColor:color,pointRadius:P.length>40?0:3,tension:.1,...extra});
+  rangeChart=new Chart($('c3'),{type:'line',data:{datasets:[
+    ds('Consumo acumulado',p=>p.c,'#ef4444'),
+    ds('Injeção acumulada',p=>p.i,'#10b981'),
+    ds('Saldo líquido',p=>p.i-p.c,'#0ea5e9',{borderDash:[6,4]})]},
+  options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+    plugins:{legend:{labels:{color:tick}},tooltip:{callbacks:{title:it=>fdt(it[0].parsed.x)}}},
+    scales:{x:{type:'linear',min:ca,max:cb,ticks:{color:tick,maxTicksLimit:8,callback:v=>new Date(v).toLocaleDateString('pt-BR',{day:'2-digit',month:'2-digit'})},grid:{color:grid}},
+            y:{ticks:{color:tick},grid:{color:grid}}}}});
+}
+function quickRange(q){
+  const rows=compute();if(!rows.length)return;
+  const t0=TT(rows[0]),t1=TT(rows[rows.length-1]),d=new Date(t1);
+  let from=t0;
+  if(q==='7')from=t1-6*864e5;
+  else if(q==='30')from=t1-29*864e5;
+  else if(q==='c'){const l=rows.filter(r=>r.fechamento).pop();from=l?TT(l):t0}
+  else if(q==='m')from=new Date(d.getFullYear(),d.getMonth(),1).getTime();
+  $('from').value=dstr(Math.max(from,t0));$('to').value=dstr(t1);
+  drawRange(rows);
+}
+document.querySelectorAll('[data-q]').forEach(b=>b.onclick=()=>quickRange(b.dataset.q));
+$('from').onchange=$('to').onchange=()=>drawRange(compute());
+
+// Formulário
+function resetForm(){editId=null;$('form').reset();$('dt').value=nowLocal();$('formTitle').textContent='Nova leitura';$('btnSave').textContent='Salvar leitura';$('btnCancel').classList.add('hidden');$('msg').textContent=''}
+function toast(txt,err){
+  const t=$('toast');t.textContent=txt;t.className='fixed bottom-4 left-1/2 -translate-x-1/2 z-50 max-w-[90vw] rounded-lg px-4 py-3 text-sm font-semibold text-white shadow-lg '+(err?'bg-red-600':'bg-sky-600');
+  clearTimeout(toast.t);toast.t=setTimeout(()=>t.classList.add('hidden'),err?8000:4500);
+}
+$('form').addEventListener('submit',e=>{
+  e.preventDefault();
+  const prev=data.find(r=>r.id===editId);
+  const rec={id:editId||uid(),dt:$('dt').value,r03:parseFloat($('r03').value),r103:parseFloat($('r103').value),fechamento:!!(prev&&prev.fechamento)};
+  if([rec.r03,rec.r103].some(isNaN)||!rec.dt){$('msg').textContent='Preencha todos os campos com valores numéricos.';return}
+  if(data.some(r=>r.id!==rec.id&&r.dt===rec.dt)){$('msg').textContent='Já existe uma leitura nesse mesmo horário.';return}
+  put(rec);resetForm();
+});
+
+// Fechamento de ciclo (leitura da concessionária)
+let closeId=null;
+function openClose(pre){
+  const ult=compute().slice(-1)[0],nf=n=>n.toLocaleString('pt-BR',{maximumFractionDigits:3});
+  closeId=pre&&pre.id||null;
+  $('mdt').value=pre&&pre.dt||nowLocal();
+  $('m03').value=pre&&pre.r03!==''&&pre.r03!=null?pre.r03:'';
+  $('m103').value=pre&&pre.r103!==''&&pre.r103!=null?pre.r103:'';
+  $('m03').placeholder=ult?'Última: '+nf(ult.r03):'kWh';
+  $('m103').placeholder=ult?'Última: '+nf(ult.r103):'kWh';
+  $('mmsg').textContent='';
+  $('modal').classList.remove('hidden');
+}
+const closeModal=()=>$('modal').classList.add('hidden');
+$('btnClose').onclick=()=>openClose({id:editId,dt:$('dt').value,r03:$('r03').value,r103:$('r103').value});
+$('btnCloseTop').onclick=()=>openClose(null);
+$('mCancel').onclick=closeModal;
+$('modal').onclick=e=>{if(e.target===$('modal'))closeModal()};
+$('mOk').onclick=()=>{
+  const rec={id:closeId||uid(),dt:$('mdt').value,r03:parseFloat($('m03').value),r103:parseFloat($('m103').value),fechamento:true};
+  if([rec.r03,rec.r103].some(isNaN)||!rec.dt){$('mmsg').textContent='Preencha data e as duas leituras.';return}
+  if(data.some(r=>r.id!==rec.id&&r.dt===rec.dt)){$('mmsg').textContent='Já existe uma leitura nesse mesmo horário.';return}
+  userPick=false;put(rec);closeModal();resetForm();
+  window.scrollTo({top:0,behavior:'smooth'});
+  toast('Ciclo finalizado em '+fdt(rec.dt)+'. Novo ciclo iniciado.');
+};
+window.toggleClose=id=>{
+  const r=data.find(x=>x.id===id);if(!r)return;
+  const novo=!r.fechamento;
+  if(novo)userPick=false;
+  put({...norm(r),fechamento:novo});
+  toast(novo?'Ciclo finalizado em '+fdt(r.dt)+'. Novo ciclo iniciado.':'Fechamento removido de '+fdt(r.dt)+'.');
+};
+$('btnCancel').onclick=resetForm;
+window.edit=id=>{const r=data.find(x=>x.id===id);if(!r)return;editId=id;
+  $('dt').value=r.dt;$('r03').value=r.r03;$('r103').value=r.r103;
+  $('formTitle').textContent='Editando leitura';$('btnSave').textContent='Atualizar leitura';$('btnCancel').classList.remove('hidden');
+  window.scrollTo({top:0,behavior:'smooth'})};
+window.del=id=>{if(confirm('Excluir esta leitura?')){removeRec(id);if(editId===id)resetForm()}};
+$('period').onchange=()=>{userPick=true;render()};
+
+// Camada de dados: Firestore (se configurado) ou localStorage
+const COL=()=>collection(db,COLECAO),REF=id=>doc(db,COLECAO,id);
+const norm=r=>({id:r.id||uid(),dt:r.dt,r03:r.r03,r103:r.r103,fechamento:!!r.fechamento});
+function setStatus(kind,txt){
+  const el=$('status');el.textContent=({ok:'☁ ',wait:'… ',err:'⚠ ',local:'💾 '})[kind]+txt;
+  el.className='text-xs mt-1 font-semibold '+({ok:'text-emerald-600 dark:text-emerald-400',wait:'text-slate-500',err:'text-red-600 dark:text-red-400',local:'text-amber-600 dark:text-amber-400'})[kind];
+}
+const fbErr=e=>{console.error('Firestore:',e);toast('Não foi possível salvar no Firebase: '+(e.code||e.message||e),true);setStatus('err',e.code==='permission-denied'?'Sem permissão: confira se as regras foram publicadas (coleção '+COLECAO+')':'Erro ['+(e.code||'?')+']: '+(e.message||e))};
+function put(rec){
+  if(useFb){setDoc(REF(rec.id),rec).catch(fbErr);return}
+  const i=data.findIndex(r=>r.id===rec.id);i>=0?data[i]=rec:data.push(rec);save();render();
+}
+function removeRec(id){
+  if(useFb){deleteDoc(REF(id)).catch(fbErr);return}
+  data=data.filter(r=>r.id!==id);save();render();
+}
+function batchOps(ops){
+  for(let i=0;i<ops.length;i+=400){
+    const b=writeBatch(db);
+    ops.slice(i,i+400).forEach(([t,r])=>t==='s'?b.set(REF(r.id),r):b.delete(REF(r.id)));
+    b.commit().catch(fbErr);
+  }
+}
+function bulk(toSet,replace){
+  if(!useFb){data=replace?toSet:data.concat(toSet);save();render();return}
+  const keep=new Set(toSet.map(r=>r.id));
+  const ops=toSet.map(r=>['s',r]);
+  if(replace)data.filter(r=>!keep.has(r.id)).forEach(r=>ops.push(['d',r]));
+  batchOps(ops);
+}
+function clearAll(){
+  if(!useFb){data=[];save();render();return}
+  batchOps(data.map(r=>['d',r]));
+}
+function startSync(){
+  if(!useFb){setStatus('local','Modo local · Firebase não configurado (dados só neste navegador)');return}
+  setStatus('wait','Conectando ao Firebase…');
+  let first=true,conectou=false;
+  setTimeout(()=>{if(!conectou)setStatus('err','Sem resposta do Firebase. Verifique: projectId na config, se o Firestore Database foi criado (modo nativo, banco "(default)"), internet e bloqueadores de anúncio. Detalhes no console (F12).')},12000);
+  onSnapshot(COL(),snap=>{
+    conectou=true;
+    data=snap.docs.map(d=>({...d.data(),id:d.id}));
+    setStatus('ok','Sincronizado com o Firebase'+(snap.metadata.fromCache?' (cache local)':''));
+    render();
+    if(first&&!snap.metadata.fromCache){
+      first=false;
+      const loc=load();
+      if(snap.empty&&loc.length&&!localStorage.getItem('fv_migr')){
+        localStorage.setItem('fv_migr','1');
+        if(confirm(`Há ${loc.length} leituras salvas neste navegador. Enviar para o Firebase?`))bulk(loc.map(norm),false);
+      }
+    }
+  },fbErr);
+}
+
+// Backup
+$('btnExport').onclick=()=>{
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
+  a.download=`leituras-medidor-${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(a.href)};
+$('btnImport').onclick=()=>$('fileImport').click();
+$('fileImport').onchange=e=>{
+  const file=e.target.files[0];if(!file)return;
+  const rd=new FileReader();
+  rd.onload=()=>{try{
+    const arr=JSON.parse(rd.result);
+    if(!Array.isArray(arr))throw 0;
+    const ok=arr.filter(r=>r&&r.dt&&[r.r03,r.r103].every(v=>typeof v==='number'&&isFinite(v))).map(r=>({id:r.id||uid(),dt:r.dt,r03:r.r03,r103:r.r103,fechamento:!!r.fechamento}));
+    if(!ok.length)throw 0;
+    const replace=confirm(`${ok.length} leituras encontradas.\nOK = substituir o histórico atual\nCancelar = mesclar com o atual`);
+    const ids=new Set(data.map(r=>r.id));
+    bulk(replace?ok:ok.filter(r=>!ids.has(r.id)),replace)
+  }catch{alert('Arquivo inválido. Use um backup JSON exportado por este painel.')}
+  e.target.value=''};
+  rd.readAsText(file)};
+$('btnClear').onclick=()=>{if(data.length&&confirm('Apagar todo o histórico'+(useFb?' (também na nuvem)':'')+'? Exporte um backup antes se precisar.')){clearAll();resetForm()}};
+
+// Tema
+function setTheme(d){document.documentElement.classList.toggle('dark',d);localStorage.setItem('fv_tema',d?'dark':'light');render()}
+$('btnTheme').onclick=()=>setTheme(!document.documentElement.classList.contains('dark'));
+const saved=localStorage.getItem('fv_tema');
+document.documentElement.classList.toggle('dark',saved?saved==='dark':matchMedia('(prefers-color-scheme: dark)').matches);
+
+resetForm();render();startSync();
+</script>
+</body>
+</html>
